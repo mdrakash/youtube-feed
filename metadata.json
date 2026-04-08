@@ -1,0 +1,5 @@
+{
+  "name": "YouTube Feed Summarizer",
+  "description": "Summarize your YouTube feed videos using Gemini AI. Connect your Google account to see your latest subscription videos and get instant summaries.",
+  "requestFramePermissions": []
+}
