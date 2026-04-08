@@ -135,15 +135,12 @@ export default function App() {
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
       setIsAuthenticated(data.isAuthenticated);
-      if (data.isAuthenticated) {
-        fetchFeed("home");
-      }
     } catch (err) {
       console.error("Auth status check failed:", err);
       setIsAuthenticated(false);
       setError("Connection error: Could not reach the server. Please ensure the backend is running.");
     }
-  }, [fetchFeed]);
+  }, []);
 
   useEffect(() => {
     checkAuthStatus();
@@ -167,18 +164,18 @@ export default function App() {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && nextPageToken && !isFetchingMore && !loading) {
+        if (entries[0].isIntersecting && nextPageToken && !isFetchingRef.current && !loading) {
           fetchFeed(activeTab, true);
         }
       },
-      { threshold: 0.1, rootMargin: "200px" }
+      { threshold: 0, rootMargin: "800px" }
     );
 
     const target = document.querySelector("#scroll-anchor");
     if (target) observer.observe(target);
 
     return () => observer.disconnect();
-  }, [nextPageToken, isFetchingMore, loading, activeTab, fetchFeed]);
+  }, [nextPageToken, loading, activeTab, fetchFeed]);
 
   const handleLogin = async () => {
     try {
@@ -456,10 +453,15 @@ export default function App() {
             )}
 
             {/* Scroll Anchor for Infinite Scroll */}
-            <div id="scroll-anchor" className="h-20 flex items-center justify-center">
-              {(isFetchingMore || (loading && videos.length > 0)) && (
-                <Loader2 className="w-6 h-6 text-red-600 animate-spin" />
-              )}
+            <div id="scroll-anchor" className="py-20 flex flex-col items-center justify-center space-y-4 min-h-[200px]">
+              {nextPageToken ? (
+                <>
+                  <Loader2 className="w-8 h-8 text-red-600 animate-spin" />
+                  <p className="text-sm text-gray-500 font-medium">Loading more videos...</p>
+                </>
+              ) : videos.length > 0 ? (
+                <p className="text-sm text-gray-600">You've reached the end of the feed.</p>
+              ) : null}
             </div>
           </div>
         )}

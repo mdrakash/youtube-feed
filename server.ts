@@ -121,12 +121,12 @@ app.get("/api/youtube/home", async (req, res) => {
     const yt = google.youtube({ version: "v3", auth });
 
     if (tokensStr) {
-      // Personalized "Home" feed using activities
-      // We'll try mine: true first as it's more reliable for some accounts than home: true
+      // Personalized "Home" feed
+      // Fetching 50 items to ensure we get a good mix after filtering
       const response = await yt.activities.list({
         part: ["snippet", "contentDetails"],
-        mine: true,
-        maxResults: 24,
+        home: true,
+        maxResults: 50,
         pageToken,
       });
 
@@ -134,14 +134,24 @@ app.get("/api/youtube/home", async (req, res) => {
         ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
         .filter(Boolean) as string[];
 
-      // If no activities found, fallback to mostPopular but with user's auth for personalization
-      if (videoIds.length === 0) {
+      // If Home feed is empty on first page, try to get user's own activities or subscriptions
+      if (videoIds.length === 0 && !pageToken) {
+        const mineResponse = await yt.activities.list({
+          part: ["snippet", "contentDetails"],
+          mine: true,
+          maxResults: 24,
+        });
+        videoIds = mineResponse.data.items
+          ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
+          .filter(Boolean) as string[];
+      }
+
+      // Final fallback to popular if still empty
+      if (videoIds.length === 0 && !pageToken) {
         const popularResponse = await yt.videos.list({
           part: ["snippet", "contentDetails", "statistics"],
           chart: "mostPopular",
-          regionCode: "BD",
           maxResults: 24,
-          pageToken,
         });
 
         const items = popularResponse.data.items?.map(item => ({
@@ -154,6 +164,10 @@ app.get("/api/youtube/home", async (req, res) => {
         })) || [];
 
         return res.json({ items, nextPageToken: popularResponse.data.nextPageToken });
+      }
+
+      if (videoIds.length === 0) {
+        return res.json({ items: [], nextPageToken: response.data.nextPageToken });
       }
 
       const videoDetails = await yt.videos.list({
@@ -208,50 +222,74 @@ app.get("/api/youtube/feed", async (req, res) => {
     oauth2Client.setCredentials(tokens);
     const youtube = google.youtube({ version: "v3", auth: oauth2Client });
 
-    // For "Subscriptions" tab, we'll use subscriptions.list then playlistItems.list
-    // This is the most reliable way to get subscription videos
-    const subsResponse = await youtube.subscriptions.list({
-      mine: true,
+    // For "Subscriptions" tab, we'll fetch from multiple sources to ensure a rich feed
+    const response = await youtube.activities.list({
       part: ["snippet", "contentDetails"],
-      maxResults: 10, // Get top 10 subs to keep it fast
+      home: true,
+      maxResults: 50,
+      pageToken,
     });
 
-    const channelIds = subsResponse.data.items?.map(sub => sub.snippet?.resourceId?.channelId).filter(Boolean) as string[];
-    
-    if (!channelIds || channelIds.length === 0) {
-      return res.json({ items: [], nextPageToken: null });
+    let videoIds = response.data.items
+      ?.filter(item => item.snippet?.type === "upload" || item.snippet?.type === "playlistItem")
+      .map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
+      .filter(Boolean) as string[];
+
+    // If activities are sparse, fetch directly from subscriptions
+    if (videoIds.length < 10 && !pageToken) {
+      const subsResponse = await youtube.subscriptions.list({
+        mine: true,
+        part: ["snippet", "contentDetails"],
+        maxResults: 20,
+        order: "relevance",
+      });
+
+      const channelIds = subsResponse.data.items?.map(sub => sub.snippet?.resourceId?.channelId).filter(Boolean) as string[];
+      
+      if (channelIds && channelIds.length > 0) {
+        // Fetch latest videos from the top 8 subscribed channels
+        const channelDetails = await youtube.channels.list({
+          id: channelIds.slice(0, 8),
+          part: ["contentDetails"],
+        });
+
+        const playlistIds = channelDetails.data.items?.map(c => c.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) as string[];
+        
+        const playlistPromises = playlistIds.map(playlistId => 
+          youtube.playlistItems.list({
+            playlistId,
+            part: ["snippet", "contentDetails"],
+            maxResults: 4,
+          })
+        );
+
+        const playlistResults = await Promise.all(playlistPromises);
+        const extraIds = playlistResults.flatMap(res => res.data.items || []).map(item => item.contentDetails?.videoId).filter(Boolean) as string[];
+        
+        // Merge and deduplicate
+        videoIds = Array.from(new Set([...videoIds, ...extraIds]));
+      }
     }
 
-    const channelResponse = await youtube.channels.list({
-      id: channelIds,
-      part: ["contentDetails"],
+    if (videoIds.length === 0) {
+      return res.json({ items: [], nextPageToken: response.data.nextPageToken });
+    }
+
+    const videoDetails = await youtube.videos.list({
+      part: ["snippet", "contentDetails", "statistics"],
+      id: videoIds,
     });
 
-    const uploadPlaylistIds = channelResponse.data.items?.map(c => c.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) as string[];
-
-    // Fetch latest 3 videos from each of the top 10 subscriptions
-    const videoPromises = uploadPlaylistIds.map(playlistId => 
-      youtube.playlistItems.list({
-        playlistId,
-        part: ["snippet", "contentDetails"],
-        maxResults: 3,
-      })
-    );
-
-    const playlistResults = await Promise.all(videoPromises);
-    const allVideos = playlistResults.flatMap(res => res.data.items || []).map(item => ({
-      id: item.contentDetails?.videoId,
+    const items = videoDetails.data.items?.map(item => ({
+      id: item.id,
       title: item.snippet?.title,
       description: item.snippet?.description,
       thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
       channelTitle: item.snippet?.channelTitle,
       publishedAt: item.snippet?.publishedAt,
-    }));
+    })) || [];
 
-    // Sort by date
-    allVideos.sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
-
-    res.json({ items: allVideos, nextPageToken: null });
+    res.json({ items, nextPageToken: response.data.nextPageToken });
   } catch (error) {
     console.error("Error fetching subscription feed:", error);
     res.status(500).json({ error: "Failed to fetch subscription feed" });
