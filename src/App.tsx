@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from "react-markdown";
 import { 
@@ -77,23 +77,35 @@ export default function App() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
 
+  const nextPageTokenRef = useRef<string | null>(null);
+  const isFetchingRef = useRef(false);
+
   const selectedVideo = useMemo(() => 
     videos.find(v => v.id === selectedVideoId), 
     [videos, selectedVideoId]
   );
 
   const fetchFeed = useCallback(async (tab: "home" | "subscriptions" = activeTab, isLoadMore = false) => {
+    if (isFetchingRef.current) return;
+    
+    const token = isLoadMore ? nextPageTokenRef.current : null;
+    if (isLoadMore && !token) return;
+
+    isFetchingRef.current = true;
     if (isLoadMore) setIsFetchingMore(true);
     else {
       setLoading(true);
       setVideos([]);
+      nextPageTokenRef.current = null;
+      setNextPageToken(null);
     }
+    
     setError(null);
     try {
       const endpoint = tab === "home" ? "/api/youtube/home" : "/api/youtube/feed";
       const url = new URL(endpoint, window.location.origin);
-      if (isLoadMore && nextPageToken) {
-        url.searchParams.append("pageToken", nextPageToken);
+      if (token) {
+        url.searchParams.append("pageToken", token);
       }
       
       const res = await fetch(url.toString());
@@ -105,6 +117,7 @@ export default function App() {
       } else {
         setVideos(data.items);
       }
+      nextPageTokenRef.current = data.nextPageToken || null;
       setNextPageToken(data.nextPageToken || null);
     } catch (err) {
       setError(`Could not load your YouTube ${tab} feed. Please try again.`);
@@ -112,8 +125,9 @@ export default function App() {
     } finally {
       setLoading(false);
       setIsFetchingMore(false);
+      isFetchingRef.current = false;
     }
-  }, [activeTab, nextPageToken]);
+  }, [activeTab]);
 
   const checkAuthStatus = useCallback(async () => {
     try {
@@ -157,7 +171,7 @@ export default function App() {
           fetchFeed(activeTab, true);
         }
       },
-      { threshold: 0.5 }
+      { threshold: 0.1, rootMargin: "200px" }
     );
 
     const target = document.querySelector("#scroll-anchor");
