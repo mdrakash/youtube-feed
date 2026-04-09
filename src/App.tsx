@@ -122,7 +122,7 @@ export default function App() {
 
   const nextPageTokenRef = useRef<string | null>(null);
   const isFetchingRef = useRef(false);
-  const requestedPageTokensRef = useRef<Set<string>>(new Set());
+  const fetchedPageTokensRef = useRef<Set<string>>(new Set());
 
   const selectedVideo = useMemo(() => 
     videos.find(v => v.id === selectedVideoId), 
@@ -134,14 +134,14 @@ export default function App() {
     
     const token = isLoadMore ? nextPageTokenRef.current : null;
     if (isLoadMore && !token) return;
-    if (isLoadMore && requestedPageTokensRef.current.has(token)) return;
+    if (isLoadMore && fetchedPageTokensRef.current.has(token)) return;
 
     isFetchingRef.current = true;
     if (isLoadMore) setIsFetchingMore(true);
     else {
       setLoading(true);
       setVideos([]);
-      requestedPageTokensRef.current = new Set();
+      fetchedPageTokensRef.current = new Set();
       nextPageTokenRef.current = null;
       setNextPageToken(null);
     }
@@ -154,7 +154,7 @@ export default function App() {
         url.searchParams.append("pageToken", token);
       }
       if (isLoadMore && token) {
-        requestedPageTokensRef.current.add(token);
+        fetchedPageTokensRef.current.add(token);
       }
       
       const res = await fetch(url.toString());
@@ -173,7 +173,7 @@ export default function App() {
       setNextPageToken(data.nextPageToken || null);
     } catch (err) {
       if (isLoadMore && token) {
-        requestedPageTokensRef.current.delete(token);
+        fetchedPageTokensRef.current.delete(token);
       }
       const message = err instanceof Error ? err.message : `Could not load your YouTube ${tab} feed. Please try again.`;
       setError(message);
@@ -226,7 +226,7 @@ export default function App() {
           !isFetchingRef.current &&
           !loading &&
           !isFetchingMore &&
-          !requestedPageTokensRef.current.has(nextPageToken)
+          !fetchedPageTokensRef.current.has(nextPageToken)
         ) {
           fetchFeed(activeTab, true);
         }
@@ -285,8 +285,11 @@ export default function App() {
         console.error("Transcript fetch failed, falling back to description:", err);
       }
 
-      const contentToSummarize = transcriptText ||
-        `Transcript unavailable${transcriptError ? ` (${transcriptError})` : ""}.\nTitle: ${video.title}\nDescription: ${video.description}`;
+      const transcriptUnavailableMessage = transcriptError
+        ? `Transcript unavailable (${transcriptError}).`
+        : "Transcript unavailable.";
+      const fallbackContent = `${transcriptUnavailableMessage}\nTitle: ${video.title}\nDescription: ${video.description}`;
+      const contentToSummarize = transcriptText || fallbackContent;
 
       const prompt = `
         You are a YouTube video summarizer. 

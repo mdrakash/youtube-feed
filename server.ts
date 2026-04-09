@@ -16,6 +16,7 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 const isProduction = process.env.NODE_ENV === "production";
+const SUBSCRIPTIONS_PAGE_SIZE = 12;
 
 app.use(cookieParser());
 app.use(express.json());
@@ -29,10 +30,10 @@ type ApiVideo = {
   publishedAt?: string | null;
 };
 
-const encodeCursor = (cursor: Record<string, string | null>) =>
+const encodePageToken = (cursor: Record<string, string | null>) =>
   Buffer.from(JSON.stringify(cursor)).toString("base64url");
 
-const decodeCursor = (token?: string) => {
+const decodePageToken = (token?: string) => {
   if (!token) return null;
   try {
     const decoded = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
@@ -249,7 +250,7 @@ app.get("/api/youtube/feed", async (req, res) => {
     const tokens = JSON.parse(tokensStr);
     oauth2Client.setCredentials(tokens);
     const youtube = google.youtube({ version: "v3", auth: oauth2Client });
-    const decodedCursor = decodeCursor(pageToken);
+    const decodedCursor = decodePageToken(pageToken);
     const subscriptionsPageToken =
       typeof decodedCursor?.subscriptionsPageToken === "string"
         ? decodedCursor.subscriptionsPageToken
@@ -258,7 +259,7 @@ app.get("/api/youtube/feed", async (req, res) => {
     const subsResponse = await youtube.subscriptions.list({
       mine: true,
       part: ["snippet", "contentDetails"],
-      maxResults: 12,
+      maxResults: SUBSCRIPTIONS_PAGE_SIZE,
       order: "relevance",
       pageToken: subscriptionsPageToken,
     });
@@ -269,7 +270,7 @@ app.get("/api/youtube/feed", async (req, res) => {
 
     if (!channelIds.length) {
       const nextCursor = subsResponse.data.nextPageToken
-        ? encodeCursor({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+        ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
         : null;
       return res.json({ items: [], nextPageToken: nextCursor });
     }
@@ -304,7 +305,7 @@ app.get("/api/youtube/feed", async (req, res) => {
 
     if (videoIds.length === 0) {
       const nextCursor = subsResponse.data.nextPageToken
-        ? encodeCursor({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+        ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
         : null;
       return res.json({ items: [], nextPageToken: nextCursor });
     }
@@ -316,7 +317,7 @@ app.get("/api/youtube/feed", async (req, res) => {
 
     const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
     const nextCursor = subsResponse.data.nextPageToken
-      ? encodeCursor({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+      ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
       : null;
 
     res.json({ items, nextPageToken: nextCursor });
