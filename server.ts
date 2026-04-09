@@ -5,6 +5,7 @@ import { google } from "googleapis";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { createRequire } from "module";
+import type { Response } from "express";
 
 const require = createRequire(import.meta.url);
 const YT = require("youtube-transcript");
@@ -14,9 +15,59 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
+const isProduction = process.env.NODE_ENV === "production";
+// Fetch a limited set of subscriptions per page to balance API quota and feed freshness.
+const SUBSCRIPTIONS_PAGE_SIZE = 6;
+// Pull a few latest uploads per channel so each page remains diverse but not too large.
+const SUBSCRIPTION_UPLOADS_PER_CHANNEL = 4;
 
 app.use(cookieParser());
 app.use(express.json());
+
+type ApiVideo = {
+  id?: string | null;
+  title?: string | null;
+  description?: string | null;
+  thumbnail?: string | null;
+  channelTitle?: string | null;
+  publishedAt?: string | null;
+};
+
+const encodePageToken = (cursor: Record<string, string | null>) =>
+  Buffer.from(JSON.stringify(cursor)).toString("base64url");
+
+const decodePageToken = (token?: string) => {
+  if (!token) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    return typeof decoded === "object" && decoded ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+const mapVideoItem = (item: any): ApiVideo => ({
+  id: item.id,
+  title: item.snippet?.title,
+  description: item.snippet?.description,
+  thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
+  channelTitle: item.snippet?.channelTitle,
+  publishedAt: item.snippet?.publishedAt,
+});
+
+const sortVideosByDateDesc = (videos: ApiVideo[]) =>
+  videos.sort((a, b) => {
+    const aTime = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+    const bTime = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+
+const sendApiError = (
+  res: Response,
+  status: number,
+  code: string,
+  message: string
+) => res.status(status).json({ error: { code, message } });
 
 // Add transcript endpoint
 app.get("/api/youtube/transcript/:videoId", async (req, res) => {
@@ -68,12 +119,12 @@ app.get("/auth/callback", async (req, res) => {
     const { tokens } = await oauth2Client.getToken(code as string);
     
     // Store tokens in cookies
-    res.cookie("youtube_tokens", JSON.stringify(tokens), {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-    });
+      res.cookie("youtube_tokens", JSON.stringify(tokens), {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? "none" : "lax",
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      });
 
     res.send(`
       <html>
@@ -92,7 +143,7 @@ app.get("/auth/callback", async (req, res) => {
     `);
   } catch (error) {
     console.error("Error exchanging code for tokens:", error);
-    res.status(500).send("Authentication failed");
+    sendApiError(res, 500, "AUTH_CALLBACK_FAILED", "Authentication failed");
   }
 });
 
@@ -133,6 +184,7 @@ app.get("/api/youtube/home", async (req, res) => {
       let videoIds = response.data.items
         ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
         .filter(Boolean) as string[];
+      videoIds = Array.from(new Set(videoIds));
 
       // If Home feed is empty on first page, try to get user's own activities or subscriptions
       if (videoIds.length === 0 && !pageToken) {
@@ -144,6 +196,7 @@ app.get("/api/youtube/home", async (req, res) => {
         videoIds = mineResponse.data.items
           ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
           .filter(Boolean) as string[];
+        videoIds = Array.from(new Set(videoIds));
       }
 
       // Final fallback to popular if still empty
@@ -154,14 +207,7 @@ app.get("/api/youtube/home", async (req, res) => {
           maxResults: 24,
         });
 
-        const items = popularResponse.data.items?.map(item => ({
-          id: item.id,
-          title: item.snippet?.title,
-          description: item.snippet?.description,
-          thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
-          channelTitle: item.snippet?.channelTitle,
-          publishedAt: item.snippet?.publishedAt,
-        })) || [];
+        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
 
         return res.json({ items, nextPageToken: popularResponse.data.nextPageToken });
       }
@@ -175,14 +221,7 @@ app.get("/api/youtube/home", async (req, res) => {
         id: videoIds,
       });
 
-      const items = videoDetails.data.items?.map(item => ({
-        id: item.id,
-        title: item.snippet?.title,
-        description: item.snippet?.description,
-        thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
-        channelTitle: item.snippet?.channelTitle,
-        publishedAt: item.snippet?.publishedAt,
-      })) || [];
+      const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
 
       return res.json({ items, nextPageToken: response.data.nextPageToken });
     } else {
@@ -195,84 +234,83 @@ app.get("/api/youtube/home", async (req, res) => {
         pageToken,
       });
 
-      const items = response.data.items?.map(item => ({
-        id: item.id,
-        title: item.snippet?.title,
-        description: item.snippet?.description,
-        thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
-        channelTitle: item.snippet?.channelTitle,
-        publishedAt: item.snippet?.publishedAt,
-      })) || [];
+      const items = sortVideosByDateDesc((response.data.items?.map(mapVideoItem) || []));
 
       res.json({ items, nextPageToken: response.data.nextPageToken });
     }
   } catch (error) {
     console.error("Error fetching home feed:", error);
-    res.status(500).json({ error: "Failed to fetch home feed" });
+    sendApiError(res, 500, "HOME_FEED_FETCH_FAILED", "Failed to fetch home feed");
   }
 });
 
 app.get("/api/youtube/feed", async (req, res) => {
   const tokensStr = req.cookies.youtube_tokens;
   const pageToken = req.query.pageToken as string;
-  if (!tokensStr) return res.status(401).json({ error: "Unauthorized" });
+  if (!tokensStr) return sendApiError(res, 401, "UNAUTHORIZED", "Unauthorized");
 
   try {
     const tokens = JSON.parse(tokensStr);
     oauth2Client.setCredentials(tokens);
     const youtube = google.youtube({ version: "v3", auth: oauth2Client });
+    const decodedCursor = decodePageToken(pageToken);
+    const subscriptionsPageToken =
+      typeof decodedCursor?.subscriptionsPageToken === "string"
+        ? decodedCursor.subscriptionsPageToken
+        : undefined;
 
-    // For "Subscriptions" tab, we'll fetch from multiple sources to ensure a rich feed
-    const response = await youtube.activities.list({
+    const subsResponse = await youtube.subscriptions.list({
+      mine: true,
       part: ["snippet", "contentDetails"],
-      home: true,
-      maxResults: 50,
-      pageToken,
+      maxResults: SUBSCRIPTIONS_PAGE_SIZE,
+      order: "relevance",
+      pageToken: subscriptionsPageToken,
     });
 
-    let videoIds = response.data.items
-      ?.filter(item => item.snippet?.type === "upload" || item.snippet?.type === "playlistItem")
-      .map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
+    const channelIds = subsResponse.data.items
+      ?.map(sub => sub.snippet?.resourceId?.channelId)
       .filter(Boolean) as string[];
 
-    // If activities are sparse, fetch directly from subscriptions
-    if (videoIds.length < 10 && !pageToken) {
-      const subsResponse = await youtube.subscriptions.list({
-        mine: true,
-        part: ["snippet", "contentDetails"],
-        maxResults: 20,
-        order: "relevance",
-      });
-
-      const channelIds = subsResponse.data.items?.map(sub => sub.snippet?.resourceId?.channelId).filter(Boolean) as string[];
-      
-      if (channelIds && channelIds.length > 0) {
-        // Fetch latest videos from the top 8 subscribed channels
-        const channelDetails = await youtube.channels.list({
-          id: channelIds.slice(0, 8),
-          part: ["contentDetails"],
-        });
-
-        const playlistIds = channelDetails.data.items?.map(c => c.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) as string[];
-        
-        const playlistPromises = playlistIds.map(playlistId => 
-          youtube.playlistItems.list({
-            playlistId,
-            part: ["snippet", "contentDetails"],
-            maxResults: 4,
-          })
-        );
-
-        const playlistResults = await Promise.all(playlistPromises);
-        const extraIds = playlistResults.flatMap(res => res.data.items || []).map(item => item.contentDetails?.videoId).filter(Boolean) as string[];
-        
-        // Merge and deduplicate
-        videoIds = Array.from(new Set([...videoIds, ...extraIds]));
-      }
+    if (!channelIds.length) {
+      const nextCursor = subsResponse.data.nextPageToken
+        ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+        : null;
+      return res.json({ items: [], nextPageToken: nextCursor });
     }
 
+    const channelDetails = await youtube.channels.list({
+      id: channelIds,
+      part: ["contentDetails"],
+      maxResults: channelIds.length,
+    });
+
+    const playlistIds = channelDetails.data.items
+      ?.map(c => c.contentDetails?.relatedPlaylists?.uploads)
+      .filter(Boolean) as string[];
+
+    const playlistPromises = playlistIds.map(playlistId =>
+      youtube.playlistItems.list({
+        playlistId,
+        part: ["snippet", "contentDetails"],
+        maxResults: SUBSCRIPTION_UPLOADS_PER_CHANNEL,
+      })
+    );
+
+    const playlistResults = await Promise.all(playlistPromises);
+    const videoIds = Array.from(
+      new Set(
+        playlistResults
+          .flatMap(result => result.data.items || [])
+          .map(item => item.contentDetails?.videoId)
+          .filter(Boolean) as string[]
+      )
+    );
+
     if (videoIds.length === 0) {
-      return res.json({ items: [], nextPageToken: response.data.nextPageToken });
+      const nextCursor = subsResponse.data.nextPageToken
+        ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+        : null;
+      return res.json({ items: [], nextPageToken: nextCursor });
     }
 
     const videoDetails = await youtube.videos.list({
@@ -280,19 +318,20 @@ app.get("/api/youtube/feed", async (req, res) => {
       id: videoIds,
     });
 
-    const items = videoDetails.data.items?.map(item => ({
-      id: item.id,
-      title: item.snippet?.title,
-      description: item.snippet?.description,
-      thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url,
-      channelTitle: item.snippet?.channelTitle,
-      publishedAt: item.snippet?.publishedAt,
-    })) || [];
+    const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
+    const nextCursor = subsResponse.data.nextPageToken
+      ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
+      : null;
 
-    res.json({ items, nextPageToken: response.data.nextPageToken });
+    res.json({ items, nextPageToken: nextCursor });
   } catch (error) {
     console.error("Error fetching subscription feed:", error);
-    res.status(500).json({ error: "Failed to fetch subscription feed" });
+    sendApiError(
+      res,
+      500,
+      "SUBSCRIPTION_FEED_FETCH_FAILED",
+      "Failed to fetch subscription feed"
+    );
   }
 });
 
