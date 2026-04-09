@@ -47,7 +47,7 @@ const decodePageToken = (token?: string) => {
 };
 
 type HomeFeedCursor = {
-  source: "home" | "popular";
+  source: "home";
   homePageToken: string | null;
   popularPageToken: string | null;
 };
@@ -61,7 +61,6 @@ const encodeHomeFeedCursor = (cursor: HomeFeedCursor) =>
 
 const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
   const decoded = decodePageToken(token);
-  const source = decoded?.source === "popular" ? "popular" : "home";
   const hasUndecodableToken = !!token && !decoded;
   const homePageToken =
     typeof decoded?.homePageToken === "string"
@@ -72,7 +71,7 @@ const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
   const popularPageToken =
     typeof decoded?.popularPageToken === "string" ? decoded.popularPageToken : null;
 
-  return { source, homePageToken, popularPageToken };
+  return { source: "home", homePageToken, popularPageToken };
 };
 
 const mapVideoItem = (item: any): ApiVideo => ({
@@ -202,10 +201,6 @@ app.get("/api/youtube/home", async (req, res) => {
 
     if (tokensStr) {
       const cursor = decodeHomeFeedCursor(pageToken);
-
-      if (cursor.source === "popular") {
-        return res.json({ items: [], nextPageToken: null });
-      }
 
       // Personalized "Home" feed
       // Fetching 50 items to ensure we get a good mix after filtering
