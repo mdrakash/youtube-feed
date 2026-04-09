@@ -62,10 +62,13 @@ const encodeHomeFeedCursor = (cursor: HomeFeedCursor) =>
 const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
   const decoded = decodePageToken(token);
   const source = decoded?.source === "popular" ? "popular" : "home";
+  const shouldUseLegacyHomeToken = !!token && !decoded;
   const homePageToken =
     typeof decoded?.homePageToken === "string"
       ? decoded.homePageToken
-      : token || null;
+      : shouldUseLegacyHomeToken
+        ? token
+        : null;
   const popularPageToken =
     typeof decoded?.popularPageToken === "string" ? decoded.popularPageToken : null;
 
