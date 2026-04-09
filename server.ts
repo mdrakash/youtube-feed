@@ -49,14 +49,12 @@ const decodePageToken = (token?: string) => {
 type HomeFeedCursor = {
   source: "home";
   homePageToken: string | null;
-  popularPageToken: string | null;
 };
 
 const encodeHomeFeedCursor = (cursor: HomeFeedCursor) =>
   encodePageToken({
     source: cursor.source,
     homePageToken: cursor.homePageToken,
-    popularPageToken: cursor.popularPageToken,
   });
 
 const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
@@ -68,10 +66,8 @@ const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
       : hasUndecodableToken
         ? token
         : null;
-  const popularPageToken =
-    typeof decoded?.popularPageToken === "string" ? decoded.popularPageToken : null;
 
-  return { source: "home", homePageToken, popularPageToken };
+  return { source: "home", homePageToken };
 };
 
 const mapVideoItem = (item: any): ApiVideo => ({
@@ -234,7 +230,6 @@ app.get("/api/youtube/home", async (req, res) => {
           ? encodeHomeFeedCursor({
               source: "home",
               homePageToken: response.data.nextPageToken,
-              popularPageToken: null,
             })
           : null;
         return res.json({ items: [], nextPageToken: nextCursor });
@@ -251,7 +246,6 @@ app.get("/api/youtube/home", async (req, res) => {
         ? encodeHomeFeedCursor({
             source: "home",
             homePageToken: response.data.nextPageToken,
-            popularPageToken: null,
           })
         : null;
       return res.json({ items, nextPageToken: nextCursor });
