@@ -57,11 +57,6 @@ const normalizeVideos = (items: any[]): Video[] => {
       if (seen.has(item.id)) return false;
       seen.add(item.id);
       return true;
-    })
-    .sort((a, b) => {
-      const aTime = new Date(a.publishedAt || 0).getTime();
-      const bTime = new Date(b.publishedAt || 0).getTime();
-      return bTime - aTime;
     });
 };
 
@@ -119,7 +114,8 @@ export default function App() {
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"home" | "subscriptions">("home");
+  // Home tab is temporarily disabled.
+  const [activeTab, setActiveTab] = useState<"home" | "subscriptions">("subscriptions");
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
 
@@ -137,9 +133,11 @@ export default function App() {
     if (isFetchingRef.current) return;
     
     const token = isLoadMore ? nextPageTokenRef.current : null;
-    if (isLoadMore && !token) return;
-    if (isLoadMore && fetchedPageTokensRef.current.has(token)) return;
-    if (isLoadMore && (pageTokenFailureCountRef.current.get(token) || 0) >= MAX_PAGE_TOKEN_RETRIES) return;
+    if (isLoadMore) {
+      if (!token) return;
+      if (fetchedPageTokensRef.current.has(token)) return;
+      if ((pageTokenFailureCountRef.current.get(token) || 0) >= MAX_PAGE_TOKEN_RETRIES) return;
+    }
 
     isFetchingRef.current = true;
     if (isLoadMore) setIsFetchingMore(true);
@@ -244,7 +242,7 @@ export default function App() {
           fetchFeed(activeTab, true);
         }
       },
-      { threshold: 0, rootMargin: "800px" }
+      { threshold: 0.1, rootMargin: "200px 0px" }
     );
 
     const target = document.querySelector("#scroll-anchor");
@@ -426,6 +424,7 @@ export default function App() {
         ) : (
           <div className="space-y-6">
             <div className="flex items-center gap-6 border-b border-white/10 mb-6">
+              {/*
               <button 
                 onClick={() => setActiveTab("home")}
                 className={cn(
@@ -438,6 +437,7 @@ export default function App() {
                   <motion.div layoutId="activeTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-red-600" />
                 )}
               </button>
+              */}
               <button 
                 onClick={() => setActiveTab("subscriptions")}
                 className={cn(

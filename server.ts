@@ -47,21 +47,18 @@ const decodePageToken = (token?: string) => {
 };
 
 type HomeFeedCursor = {
-  source: "home" | "popular";
+  source: "home";
   homePageToken: string | null;
-  popularPageToken: string | null;
 };
 
 const encodeHomeFeedCursor = (cursor: HomeFeedCursor) =>
   encodePageToken({
     source: cursor.source,
     homePageToken: cursor.homePageToken,
-    popularPageToken: cursor.popularPageToken,
   });
 
 const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
   const decoded = decodePageToken(token);
-  const source = decoded?.source === "popular" ? "popular" : "home";
   const hasUndecodableToken = !!token && !decoded;
   const homePageToken =
     typeof decoded?.homePageToken === "string"
@@ -69,10 +66,8 @@ const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
       : hasUndecodableToken
         ? token
         : null;
-  const popularPageToken =
-    typeof decoded?.popularPageToken === "string" ? decoded.popularPageToken : null;
 
-  return { source, homePageToken, popularPageToken };
+  return { source: "home", homePageToken };
 };
 
 const mapVideoItem = (item: any): ApiVideo => ({
@@ -84,12 +79,25 @@ const mapVideoItem = (item: any): ApiVideo => ({
   publishedAt: item.snippet?.publishedAt,
 });
 
-const sortVideosByDateDesc = (videos: ApiVideo[]) =>
-  videos.sort((a, b) => {
+const mapVideosByRequestedIdOrder = (videoIds: string[], items: any[]): ApiVideo[] => {
+  const byId = new Map<string, ApiVideo>();
+  for (const item of items || []) {
+    const mapped = mapVideoItem(item);
+    if (mapped.id) byId.set(mapped.id, mapped);
+  }
+
+  return videoIds
+    .map(id => byId.get(id))
+    .filter((video): video is ApiVideo => !!video?.id);
+};
+
+const sortVideosByPublishedAtDesc = (videos: ApiVideo[]): ApiVideo[] => {
+  return [...videos].sort((a, b) => {
     const aTime = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
     const bTime = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
     return bTime - aTime;
   });
+};
 
 const sendApiError = (
   res: Response,
@@ -189,39 +197,22 @@ app.post("/api/auth/logout", (req, res) => {
 app.get("/api/youtube/home", async (req, res) => {
   const tokensStr = req.cookies.youtube_tokens;
   const pageToken = req.query.pageToken as string | undefined;
+  if (!tokensStr) {
+    return sendApiError(
+      res,
+      401,
+      "UNAUTHORIZED",
+      "Sign in required to load your YouTube home feed"
+    );
+  }
   
   try {
-    let auth: any = process.env.GOOGLE_API_KEY;
-    if (tokensStr) {
-      const tokens = JSON.parse(tokensStr);
-      oauth2Client.setCredentials(tokens);
-      auth = oauth2Client;
-    }
+    const tokens = JSON.parse(tokensStr);
+    oauth2Client.setCredentials(tokens);
 
-    const yt = google.youtube({ version: "v3", auth });
+    const yt = google.youtube({ version: "v3", auth: oauth2Client });
 
-    if (tokensStr) {
-      const cursor = decodeHomeFeedCursor(pageToken);
-
-      if (cursor.source === "popular") {
-        const popularResponse = await yt.videos.list({
-          part: ["snippet", "contentDetails", "statistics"],
-          chart: "mostPopular",
-          maxResults: 24,
-          pageToken: cursor.popularPageToken || undefined,
-        });
-
-        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
-        const nextCursor = popularResponse.data.nextPageToken
-          ? encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: popularResponse.data.nextPageToken,
-            })
-          : null;
-
-        return res.json({ items, nextPageToken: nextCursor });
-      }
+    const cursor = decodeHomeFeedCursor(pageToken);
 
       // Personalized "Home" feed
       // Fetching 50 items to ensure we get a good mix after filtering
@@ -233,7 +224,16 @@ app.get("/api/youtube/home", async (req, res) => {
       });
 
       let videoIds = response.data.items
-        ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
+        ?.map(item => {
+          const c = item.contentDetails;
+          return c?.upload?.videoId || 
+                 c?.playlistItem?.resourceId?.videoId || 
+                 c?.recommendation?.resourceId?.videoId || 
+                 c?.bulletin?.resourceId?.videoId ||
+                 c?.like?.resourceId?.videoId ||
+                 c?.favorite?.resourceId?.videoId ||
+                 c?.promotedItem?.videoId;
+        })
         .filter(Boolean) as string[];
       videoIds = Array.from(new Set(videoIds));
 
@@ -245,30 +245,18 @@ app.get("/api/youtube/home", async (req, res) => {
           maxResults: 24,
         });
         videoIds = mineResponse.data.items
-          ?.map(item => item.contentDetails?.upload?.videoId || item.contentDetails?.playlistItem?.resourceId?.videoId)
+          ?.map(item => {
+            const c = item.contentDetails;
+            return c?.upload?.videoId || 
+                   c?.playlistItem?.resourceId?.videoId || 
+                   c?.recommendation?.resourceId?.videoId || 
+                   c?.bulletin?.resourceId?.videoId ||
+                   c?.like?.resourceId?.videoId ||
+                   c?.favorite?.resourceId?.videoId ||
+                   c?.promotedItem?.videoId;
+          })
           .filter(Boolean) as string[];
         videoIds = Array.from(new Set(videoIds));
-      }
-
-      // Final fallback to popular if still empty
-      if (videoIds.length === 0 && !cursor.homePageToken) {
-        const popularResponse = await yt.videos.list({
-          part: ["snippet", "contentDetails", "statistics"],
-          chart: "mostPopular",
-          maxResults: 24,
-        });
-
-        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
-
-        const nextCursor = popularResponse.data.nextPageToken
-          ? encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: popularResponse.data.nextPageToken,
-            })
-          : null;
-
-        return res.json({ items, nextPageToken: nextCursor });
       }
 
       if (videoIds.length === 0) {
@@ -276,13 +264,8 @@ app.get("/api/youtube/home", async (req, res) => {
           ? encodeHomeFeedCursor({
               source: "home",
               homePageToken: response.data.nextPageToken,
-              popularPageToken: null,
             })
-          : encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: null,
-            });
+          : null;
         return res.json({ items: [], nextPageToken: nextCursor });
       }
 
@@ -291,36 +274,32 @@ app.get("/api/youtube/home", async (req, res) => {
         id: videoIds,
       });
 
-      const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
+      const items = mapVideosByRequestedIdOrder(videoIds, videoDetails.data.items || []);
 
-      const nextCursor = response.data.nextPageToken
-        ? encodeHomeFeedCursor({
-            source: "home",
-            homePageToken: response.data.nextPageToken,
-            popularPageToken: null,
-          })
-        : encodeHomeFeedCursor({
-            source: "popular",
-            homePageToken: null,
-            popularPageToken: null,
-          });
-      return res.json({ items, nextPageToken: nextCursor });
-    } else {
-      // Public popular feed for non-logged in users
-      const response = await yt.videos.list({
-        part: ["snippet", "contentDetails", "statistics"],
-        chart: "mostPopular",
-        regionCode: "BD",
-        maxResults: 24,
-        pageToken,
-      });
-
-      const items = sortVideosByDateDesc((response.data.items?.map(mapVideoItem) || []));
-
-      res.json({ items, nextPageToken: response.data.nextPageToken });
-    }
+    const nextCursor = response.data.nextPageToken
+      ? encodeHomeFeedCursor({
+          source: "home",
+          homePageToken: response.data.nextPageToken,
+        })
+      : null;
+    return res.json({ items, nextPageToken: nextCursor });
   } catch (error) {
     console.error("Error fetching home feed:", error);
+    const message = error instanceof Error ? error.message : "";
+    if (
+      message.includes("invalid_grant") ||
+      message.includes("invalid_token") ||
+      message.includes("No access, refresh token") ||
+      message.includes("Unexpected token")
+    ) {
+      res.clearCookie("youtube_tokens");
+      return sendApiError(
+        res,
+        401,
+        "UNAUTHORIZED",
+        "Your login session expired. Please sign in again."
+      );
+    }
     sendApiError(res, 500, "HOME_FEED_FETCH_FAILED", "Failed to fetch home feed");
   }
 });
@@ -399,7 +378,9 @@ app.get("/api/youtube/feed", async (req, res) => {
       id: videoIds,
     });
 
-    const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
+    const items = sortVideosByPublishedAtDesc(
+      mapVideosByRequestedIdOrder(videoIds, videoDetails.data.items || [])
+    );
     const nextCursor = subsResponse.data.nextPageToken
       ? encodePageToken({ subscriptionsPageToken: subsResponse.data.nextPageToken })
       : null;
