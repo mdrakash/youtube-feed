@@ -77,6 +77,7 @@ const getErrorMessage = async (res: Response, fallback: string) => {
   }
   return fallback;
 };
+const MAX_PAGE_TOKEN_RETRIES = 2;
 
 const SummaryContent = ({ content, videoId }: { content: string; videoId: string }) => {
   const processedContent = useMemo(() => {
@@ -123,6 +124,7 @@ export default function App() {
   const nextPageTokenRef = useRef<string | null>(null);
   const isFetchingRef = useRef(false);
   const fetchedPageTokensRef = useRef<Set<string>>(new Set());
+  const pageTokenFailureCountRef = useRef<Map<string, number>>(new Map());
 
   const selectedVideo = useMemo(() => 
     videos.find(v => v.id === selectedVideoId), 
@@ -135,6 +137,7 @@ export default function App() {
     const token = isLoadMore ? nextPageTokenRef.current : null;
     if (isLoadMore && !token) return;
     if (isLoadMore && fetchedPageTokensRef.current.has(token)) return;
+    if (isLoadMore && (pageTokenFailureCountRef.current.get(token) || 0) >= MAX_PAGE_TOKEN_RETRIES) return;
 
     isFetchingRef.current = true;
     if (isLoadMore) setIsFetchingMore(true);
@@ -142,6 +145,7 @@ export default function App() {
       setLoading(true);
       setVideos([]);
       fetchedPageTokensRef.current = new Set();
+      pageTokenFailureCountRef.current = new Map();
       nextPageTokenRef.current = null;
       setNextPageToken(null);
     }
@@ -171,9 +175,16 @@ export default function App() {
       }
       nextPageTokenRef.current = data.nextPageToken || null;
       setNextPageToken(data.nextPageToken || null);
+      if (isLoadMore && token) {
+        pageTokenFailureCountRef.current.delete(token);
+      }
     } catch (err) {
       if (isLoadMore && token) {
-        fetchedPageTokensRef.current.delete(token);
+        const nextFailureCount = (pageTokenFailureCountRef.current.get(token) || 0) + 1;
+        pageTokenFailureCountRef.current.set(token, nextFailureCount);
+        if (nextFailureCount < MAX_PAGE_TOKEN_RETRIES) {
+          fetchedPageTokensRef.current.delete(token);
+        }
       }
       const message = err instanceof Error ? err.message : `Could not load your YouTube ${tab} feed. Please try again.`;
       setError(message);
