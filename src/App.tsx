@@ -79,6 +79,7 @@ const getErrorMessage = async (res: Response, fallback: string) => {
   }
   return fallback;
 };
+const MAX_PAGE_TOKEN_RETRIES = 2;
 
 const SummaryContent = ({ content, videoId }: { content: string; videoId: string }) => {
   const processedContent = useMemo(() => {
@@ -111,7 +112,6 @@ const SummaryContent = ({ content, videoId }: { content: string; videoId: string
 };
 
 export default function App() {
-  const MAX_PAGE_TOKEN_RETRIES = 2;
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(false);
@@ -286,7 +286,8 @@ export default function App() {
           transcriptText = transcript
             .map((t: any) => {
               const timestamp = toTimestamp(t?.offset);
-              return timestamp ? `[${timestamp}] ${t?.text || ""}` : (t?.text || "");
+              if (!timestamp || !t?.text) return "";
+              return `[${timestamp}] ${t.text}`;
             })
             .filter(Boolean)
             .join("\n");

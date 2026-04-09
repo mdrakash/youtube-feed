@@ -16,7 +16,9 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 const isProduction = process.env.NODE_ENV === "production";
+// Fetch a limited set of subscriptions per page to balance API quota and feed freshness.
 const SUBSCRIPTIONS_PAGE_SIZE = 6;
+// Pull a few latest uploads per channel so each page remains diverse but not too large.
 const SUBSCRIPTION_UPLOADS_PER_CHANNEL = 4;
 
 app.use(cookieParser());
