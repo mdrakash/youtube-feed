@@ -204,23 +204,7 @@ app.get("/api/youtube/home", async (req, res) => {
       const cursor = decodeHomeFeedCursor(pageToken);
 
       if (cursor.source === "popular") {
-        const popularResponse = await yt.videos.list({
-          part: ["snippet", "contentDetails", "statistics"],
-          chart: "mostPopular",
-          maxResults: 24,
-          pageToken: cursor.popularPageToken || undefined,
-        });
-
-        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
-        const nextCursor = popularResponse.data.nextPageToken
-          ? encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: popularResponse.data.nextPageToken,
-            })
-          : null;
-
-        return res.json({ items, nextPageToken: nextCursor });
+        return res.json({ items: [], nextPageToken: null });
       }
 
       // Personalized "Home" feed
@@ -250,27 +234,6 @@ app.get("/api/youtube/home", async (req, res) => {
         videoIds = Array.from(new Set(videoIds));
       }
 
-      // Final fallback to popular if still empty
-      if (videoIds.length === 0 && !cursor.homePageToken) {
-        const popularResponse = await yt.videos.list({
-          part: ["snippet", "contentDetails", "statistics"],
-          chart: "mostPopular",
-          maxResults: 24,
-        });
-
-        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
-
-        const nextCursor = popularResponse.data.nextPageToken
-          ? encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: popularResponse.data.nextPageToken,
-            })
-          : null;
-
-        return res.json({ items, nextPageToken: nextCursor });
-      }
-
       if (videoIds.length === 0) {
         const nextCursor = response.data.nextPageToken
           ? encodeHomeFeedCursor({
@@ -278,11 +241,7 @@ app.get("/api/youtube/home", async (req, res) => {
               homePageToken: response.data.nextPageToken,
               popularPageToken: null,
             })
-          : encodeHomeFeedCursor({
-              source: "popular",
-              homePageToken: null,
-              popularPageToken: null,
-            });
+          : null;
         return res.json({ items: [], nextPageToken: nextCursor });
       }
 
@@ -299,11 +258,7 @@ app.get("/api/youtube/home", async (req, res) => {
             homePageToken: response.data.nextPageToken,
             popularPageToken: null,
           })
-        : encodeHomeFeedCursor({
-            source: "popular",
-            homePageToken: null,
-            popularPageToken: null,
-          });
+        : null;
       return res.json({ items, nextPageToken: nextCursor });
     } else {
       // Public popular feed for non-logged in users
