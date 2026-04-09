@@ -35,6 +35,49 @@ interface Video {
   publishedAt: string;
 }
 
+const toTimestamp = (offsetValue: unknown) => {
+  const raw = Number(offsetValue);
+  if (!Number.isFinite(raw) || raw < 0) return null;
+  const seconds = raw > 10_000 ? Math.floor(raw / 1000) : Math.floor(raw);
+  const hh = Math.floor(seconds / 3600);
+  const mm = Math.floor((seconds % 3600) / 60);
+  const ss = seconds % 60;
+  return hh > 0
+    ? `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`
+    : `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+};
+
+const normalizeVideos = (items: any[]): Video[] => {
+  const seen = new Set<string>();
+  return (items || [])
+    .filter((item): item is Video => !!item?.id)
+    .filter(item => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    })
+    .sort((a, b) => {
+      const aTime = new Date(a.publishedAt || 0).getTime();
+      const bTime = new Date(b.publishedAt || 0).getTime();
+      return bTime - aTime;
+    });
+};
+
+const mergeVideos = (prev: Video[], incoming: any[]) => {
+  return normalizeVideos([...prev, ...(incoming || [])]);
+};
+
+const getErrorMessage = async (res: Response, fallback: string) => {
+  try {
+    const body = await res.json();
+    if (typeof body?.error === "string") return body.error;
+    if (typeof body?.error?.message === "string") return body.error.message;
+  } catch {
+    // Ignore parse error and use fallback
+  }
+  return fallback;
+};
+
 const SummaryContent = ({ content, videoId }: { content: string; videoId: string }) => {
   const processedContent = useMemo(() => {
     // Regex to find [mm:ss] or [hh:mm:ss]
@@ -79,6 +122,7 @@ export default function App() {
 
   const nextPageTokenRef = useRef<string | null>(null);
   const isFetchingRef = useRef(false);
+  const requestedPageTokensRef = useRef<Set<string>>(new Set());
 
   const selectedVideo = useMemo(() => 
     videos.find(v => v.id === selectedVideoId), 
@@ -90,12 +134,14 @@ export default function App() {
     
     const token = isLoadMore ? nextPageTokenRef.current : null;
     if (isLoadMore && !token) return;
+    if (isLoadMore && requestedPageTokensRef.current.has(token)) return;
 
     isFetchingRef.current = true;
     if (isLoadMore) setIsFetchingMore(true);
     else {
       setLoading(true);
       setVideos([]);
+      requestedPageTokensRef.current = new Set();
       nextPageTokenRef.current = null;
       setNextPageToken(null);
     }
@@ -107,20 +153,30 @@ export default function App() {
       if (token) {
         url.searchParams.append("pageToken", token);
       }
+      if (isLoadMore && token) {
+        requestedPageTokensRef.current.add(token);
+      }
       
       const res = await fetch(url.toString());
-      if (!res.ok) throw new Error("Failed to fetch feed");
+      if (!res.ok) {
+        const message = await getErrorMessage(res, "Failed to fetch feed");
+        throw new Error(message);
+      }
       const data = await res.json();
       
       if (isLoadMore) {
-        setVideos(prev => [...prev, ...data.items]);
+        setVideos(prev => mergeVideos(prev, data.items));
       } else {
-        setVideos(data.items);
+        setVideos(normalizeVideos(data.items || []));
       }
       nextPageTokenRef.current = data.nextPageToken || null;
       setNextPageToken(data.nextPageToken || null);
     } catch (err) {
-      setError(`Could not load your YouTube ${tab} feed. Please try again.`);
+      if (isLoadMore && token) {
+        requestedPageTokensRef.current.delete(token);
+      }
+      const message = err instanceof Error ? err.message : `Could not load your YouTube ${tab} feed. Please try again.`;
+      setError(message);
       console.error(err);
     } finally {
       setLoading(false);
@@ -164,7 +220,14 @@ export default function App() {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && nextPageToken && !isFetchingRef.current && !loading) {
+        if (
+          entries[0].isIntersecting &&
+          nextPageToken &&
+          !isFetchingRef.current &&
+          !loading &&
+          !isFetchingMore &&
+          !requestedPageTokensRef.current.has(nextPageToken)
+        ) {
           fetchFeed(activeTab, true);
         }
       },
@@ -200,17 +263,30 @@ export default function App() {
     try {
       // 1. Try to fetch transcript
       let transcriptText = "";
+      let transcriptError = "";
       try {
         const transcriptRes = await fetch(`/api/youtube/transcript/${video.id}`);
         if (transcriptRes.ok) {
-          const { transcript } = await transcriptRes.json();
-          transcriptText = transcript.map((t: any) => `[${new Date(t.offset).toISOString().substr(14, 5)}] ${t.text}`).join("\n");
+          const payload = await transcriptRes.json();
+          const transcript = Array.isArray(payload?.transcript) ? payload.transcript : [];
+          transcriptError = payload?.error || "";
+          transcriptText = transcript
+            .map((t: any) => {
+              const timestamp = toTimestamp(t?.offset);
+              return timestamp ? `[${timestamp}] ${t?.text || ""}` : (t?.text || "");
+            })
+            .filter(Boolean)
+            .join("\n");
+        } else {
+          transcriptError = await getErrorMessage(transcriptRes, "Transcript not available.");
         }
       } catch (err) {
+        transcriptError = "Transcript fetch failed.";
         console.error("Transcript fetch failed, falling back to description:", err);
       }
 
-      const contentToSummarize = transcriptText || `Title: ${video.title}\nDescription: ${video.description}`;
+      const contentToSummarize = transcriptText ||
+        `Transcript unavailable${transcriptError ? ` (${transcriptError})` : ""}.\nTitle: ${video.title}\nDescription: ${video.description}`;
 
       const prompt = `
         You are a YouTube video summarizer. 
@@ -454,12 +530,12 @@ export default function App() {
 
             {/* Scroll Anchor for Infinite Scroll */}
             <div id="scroll-anchor" className="py-20 flex flex-col items-center justify-center space-y-4 min-h-[200px]">
-              {nextPageToken ? (
+              {isFetchingMore ? (
                 <>
                   <Loader2 className="w-8 h-8 text-red-600 animate-spin" />
                   <p className="text-sm text-gray-500 font-medium">Loading more videos...</p>
                 </>
-              ) : videos.length > 0 ? (
+              ) : !nextPageToken && !loading && videos.length > 0 ? (
                 <p className="text-sm text-gray-600">You've reached the end of the feed.</p>
               ) : null}
             </div>
