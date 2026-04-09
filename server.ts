@@ -46,6 +46,32 @@ const decodePageToken = (token?: string) => {
   }
 };
 
+type HomeFeedCursor = {
+  source: "home" | "popular";
+  homePageToken: string | null;
+  popularPageToken: string | null;
+};
+
+const encodeHomeFeedCursor = (cursor: HomeFeedCursor) =>
+  encodePageToken({
+    source: cursor.source,
+    homePageToken: cursor.homePageToken,
+    popularPageToken: cursor.popularPageToken,
+  });
+
+const decodeHomeFeedCursor = (token?: string): HomeFeedCursor => {
+  const decoded = decodePageToken(token);
+  const source = decoded?.source === "popular" ? "popular" : "home";
+  const homePageToken =
+    typeof decoded?.homePageToken === "string"
+      ? decoded.homePageToken
+      : token || null;
+  const popularPageToken =
+    typeof decoded?.popularPageToken === "string" ? decoded.popularPageToken : null;
+
+  return { source, homePageToken, popularPageToken };
+};
+
 const mapVideoItem = (item: any): ApiVideo => ({
   id: item.id,
   title: item.snippet?.title,
@@ -159,7 +185,7 @@ app.post("/api/auth/logout", (req, res) => {
 
 app.get("/api/youtube/home", async (req, res) => {
   const tokensStr = req.cookies.youtube_tokens;
-  const pageToken = req.query.pageToken as string;
+  const pageToken = req.query.pageToken as string | undefined;
   
   try {
     let auth: any = process.env.GOOGLE_API_KEY;
@@ -172,13 +198,35 @@ app.get("/api/youtube/home", async (req, res) => {
     const yt = google.youtube({ version: "v3", auth });
 
     if (tokensStr) {
+      const cursor = decodeHomeFeedCursor(pageToken);
+
+      if (cursor.source === "popular") {
+        const popularResponse = await yt.videos.list({
+          part: ["snippet", "contentDetails", "statistics"],
+          chart: "mostPopular",
+          maxResults: 24,
+          pageToken: cursor.popularPageToken || undefined,
+        });
+
+        const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
+        const nextCursor = popularResponse.data.nextPageToken
+          ? encodeHomeFeedCursor({
+              source: "popular",
+              homePageToken: null,
+              popularPageToken: popularResponse.data.nextPageToken,
+            })
+          : null;
+
+        return res.json({ items, nextPageToken: nextCursor });
+      }
+
       // Personalized "Home" feed
       // Fetching 50 items to ensure we get a good mix after filtering
       const response = await yt.activities.list({
         part: ["snippet", "contentDetails"],
         home: true,
         maxResults: 50,
-        pageToken,
+        pageToken: cursor.homePageToken || undefined,
       });
 
       let videoIds = response.data.items
@@ -187,7 +235,7 @@ app.get("/api/youtube/home", async (req, res) => {
       videoIds = Array.from(new Set(videoIds));
 
       // If Home feed is empty on first page, try to get user's own activities or subscriptions
-      if (videoIds.length === 0 && !pageToken) {
+      if (videoIds.length === 0 && !cursor.homePageToken) {
         const mineResponse = await yt.activities.list({
           part: ["snippet", "contentDetails"],
           mine: true,
@@ -200,7 +248,7 @@ app.get("/api/youtube/home", async (req, res) => {
       }
 
       // Final fallback to popular if still empty
-      if (videoIds.length === 0 && !pageToken) {
+      if (videoIds.length === 0 && !cursor.homePageToken) {
         const popularResponse = await yt.videos.list({
           part: ["snippet", "contentDetails", "statistics"],
           chart: "mostPopular",
@@ -209,11 +257,30 @@ app.get("/api/youtube/home", async (req, res) => {
 
         const items = sortVideosByDateDesc((popularResponse.data.items?.map(mapVideoItem) || []));
 
-        return res.json({ items, nextPageToken: popularResponse.data.nextPageToken });
+        const nextCursor = popularResponse.data.nextPageToken
+          ? encodeHomeFeedCursor({
+              source: "popular",
+              homePageToken: null,
+              popularPageToken: popularResponse.data.nextPageToken,
+            })
+          : null;
+
+        return res.json({ items, nextPageToken: nextCursor });
       }
 
       if (videoIds.length === 0) {
-        return res.json({ items: [], nextPageToken: response.data.nextPageToken });
+        const nextCursor = response.data.nextPageToken
+          ? encodeHomeFeedCursor({
+              source: "home",
+              homePageToken: response.data.nextPageToken,
+              popularPageToken: null,
+            })
+          : encodeHomeFeedCursor({
+              source: "popular",
+              homePageToken: null,
+              popularPageToken: null,
+            });
+        return res.json({ items: [], nextPageToken: nextCursor });
       }
 
       const videoDetails = await yt.videos.list({
@@ -223,7 +290,18 @@ app.get("/api/youtube/home", async (req, res) => {
 
       const items = sortVideosByDateDesc((videoDetails.data.items?.map(mapVideoItem) || []));
 
-      return res.json({ items, nextPageToken: response.data.nextPageToken });
+      const nextCursor = response.data.nextPageToken
+        ? encodeHomeFeedCursor({
+            source: "home",
+            homePageToken: response.data.nextPageToken,
+            popularPageToken: null,
+          })
+        : encodeHomeFeedCursor({
+            source: "popular",
+            homePageToken: null,
+            popularPageToken: null,
+          });
+      return res.json({ items, nextPageToken: nextCursor });
     } else {
       // Public popular feed for non-logged in users
       const response = await yt.videos.list({
