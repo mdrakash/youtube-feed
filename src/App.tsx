@@ -35,10 +35,12 @@ interface Video {
   publishedAt: string;
 }
 
+const OFFSET_MILLISECONDS_THRESHOLD = 10_000;
+
 const toTimestamp = (offsetValue: unknown) => {
   const raw = Number(offsetValue);
   if (!Number.isFinite(raw) || raw < 0) return null;
-  const seconds = raw > 10_000 ? Math.floor(raw / 1000) : Math.floor(raw);
+  const seconds = raw > OFFSET_MILLISECONDS_THRESHOLD ? Math.floor(raw / 1000) : Math.floor(raw);
   const hh = Math.floor(seconds / 3600);
   const mm = Math.floor((seconds % 3600) / 60);
   const ss = seconds % 60;
@@ -77,7 +79,6 @@ const getErrorMessage = async (res: Response, fallback: string) => {
   }
   return fallback;
 };
-const MAX_PAGE_TOKEN_RETRIES = 2;
 
 const SummaryContent = ({ content, videoId }: { content: string; videoId: string }) => {
   const processedContent = useMemo(() => {
@@ -110,6 +111,7 @@ const SummaryContent = ({ content, videoId }: { content: string; videoId: string
 };
 
 export default function App() {
+  const MAX_PAGE_TOKEN_RETRIES = 2;
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(false);
@@ -297,7 +299,7 @@ export default function App() {
       }
 
       const transcriptUnavailableMessage = transcriptError
-        ? `Transcript unavailable (${transcriptError}).`
+        ? `Transcript unavailable (${transcriptError.replace(/[.]+$/, "")})`
         : "Transcript unavailable.";
       const fallbackContent = `${transcriptUnavailableMessage}\nTitle: ${video.title}\nDescription: ${video.description}`;
       const contentToSummarize = transcriptText || fallbackContent;

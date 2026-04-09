@@ -16,7 +16,8 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 const isProduction = process.env.NODE_ENV === "production";
-const SUBSCRIPTIONS_PAGE_SIZE = 12;
+const SUBSCRIPTIONS_PAGE_SIZE = 6;
+const SUBSCRIPTION_UPLOADS_PER_CHANNEL = 4;
 
 app.use(cookieParser());
 app.use(express.json());
@@ -289,7 +290,7 @@ app.get("/api/youtube/feed", async (req, res) => {
       youtube.playlistItems.list({
         playlistId,
         part: ["snippet", "contentDetails"],
-        maxResults: 4,
+        maxResults: SUBSCRIPTION_UPLOADS_PER_CHANNEL,
       })
     );
 
